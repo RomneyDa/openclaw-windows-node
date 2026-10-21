@@ -49,6 +49,9 @@ public sealed class BuildPrerequisiteTests
             foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-File", Path.Combine(repository, "build.ps1"), "-CheckOnly", "-NoTrustRepository" })
                 start.ArgumentList.Add(argument);
+            // A PowerShell 7 parent can otherwise supply modules that Windows
+            // PowerShell 5.1 cannot load, before the runtime check is reached.
+            start.Environment.Remove("PSModulePath");
             start.Environment["PROCESSOR_ARCHITECTURE"] = "AMD64";
             start.Environment["OpenClawVsInstallRoot"] = install;
             start.Environment["OpenClawVsWherePath"] = vswhere;
@@ -73,12 +76,12 @@ public sealed class BuildPrerequisiteTests
             var output = await stdout + await stderr;
             if (supported)
             {
-                Assert.Contains("Compatible app-local Visual C++ runtime detected", output);
+                Assert.True(output.Contains("Compatible app-local Visual C++ runtime detected", StringComparison.Ordinal), output);
                 Assert.True(process.ExitCode == 0, output);
             }
             else
             {
-                Assert.Contains("Missing compatible Visual Studio C++ Redistributable", output);
+                Assert.True(output.Contains("Missing compatible Visual Studio C++ Redistributable", StringComparison.Ordinal), output);
                 Assert.DoesNotContain("All prerequisites met!", output);
                 Assert.NotEqual(0, process.ExitCode);
             }
