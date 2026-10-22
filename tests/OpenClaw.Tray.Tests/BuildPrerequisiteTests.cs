@@ -38,6 +38,11 @@ public sealed class BuildPrerequisiteTests
                 File.WriteAllText(Path.Combine(crt, "msvcp140.dll"), "resolver fixture");
             }
 
+            // Hosted checkouts may be owned by Administrators. Trust this
+            // checkout only in the child, without changing the user's config.
+            var gitConfig = Path.Combine(fixture, "gitconfig");
+            File.WriteAllText(gitConfig, $"[safe]\n\tdirectory = \"{repository.Replace('\\', '/')}\"\n");
+
             var start = new ProcessStartInfo("powershell.exe")
             {
                 WorkingDirectory = repository,
@@ -52,6 +57,7 @@ public sealed class BuildPrerequisiteTests
             // A PowerShell 7 parent can otherwise supply modules that Windows
             // PowerShell 5.1 cannot load, before the runtime check is reached.
             start.Environment.Remove("PSModulePath");
+            start.Environment["GIT_CONFIG_GLOBAL"] = gitConfig;
             start.Environment["PROCESSOR_ARCHITECTURE"] = "AMD64";
             start.Environment["OpenClawVsInstallRoot"] = install;
             start.Environment["OpenClawVsWherePath"] = vswhere;
