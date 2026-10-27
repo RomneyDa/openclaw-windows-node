@@ -817,6 +817,11 @@ test("result recovery accepts only the bound session's final assistant dispositi
   };
   const split = event({ role: "assistant", content: evidence }, null) + event({ content: marker });
   assert.equal((await run(split)).disposition, "existing-work");
+  const unindexedTools = 'data: ' + JSON.stringify({ id: "tool-turn", object: "chat.completion.chunk", choices: [
+    { delta: { role: "assistant", content: "Investigating." }, finish_reason: "tool_calls" },
+    { delta: { tool_calls: [{ id: "tool" }], content: final }, finish_reason: "tool_calls" },
+  ] }) + '\n';
+  assert.equal((await run(unindexedTools + answer(final).replace('"index":0,', ''))).disposition, "existing-work");
   for (const log of [
     answer(final.replace(candidateHash, "b".repeat(64))),
     answer(final + "\n" + marker),

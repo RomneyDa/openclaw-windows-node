@@ -53,12 +53,15 @@ async function readTaskResult(copilot, task, candidateHash) {
     if (typeof entry.id !== "string" || !entry.id) throw new Error("Missing Copilot result message identity");
     final = null;
     for (const choice of entry.choices ?? []) {
-      if (choice.index !== 0) throw new Error("Ambiguous Copilot result choice");
       const delta = choice.delta ?? {};
-      if (delta.tool_calls?.length || (delta.role && delta.role !== "assistant")) {
+      if (delta.tool_calls?.length || (delta.role && delta.role !== "assistant")
+        || (choice.finish_reason && choice.finish_reason !== "stop")) {
         pending = null;
         continue;
       }
+      // CAPI sometimes omits indexes, including in GitHub CLI's log fixtures.
+      if ((choice.index ?? 0) !== 0 || (choice.index == null && entry.choices.length !== 1))
+        throw new Error("Ambiguous Copilot result choice");
       if (delta.role === "assistant" && pending?.id !== entry.id) pending = { id: entry.id, text: "" };
       if (!pending || pending.id !== entry.id) continue;
       if (typeof delta.content === "string") pending.text += delta.content;
