@@ -265,6 +265,15 @@ and can start one deduplicated Copilot investigation with automatic PR creation
 disabled. A confirmed gap may lead to one focused draft PR, never automatic merge.
 Candidate fingerprints, task IDs, deduplication and health stay on that one issue.
 Verify its task ID and disposition comment after activation; never close the tracker.
+On a later enabled run, the monitor retrieves a completed task's final answer
+using the Copilot credential and publishes it with the workflow's issue-write
+credential. The answer must belong to the recorded task's single completed
+session and contain one matching candidate disposition marker plus evidence.
+Tool output and reasoning are not dispositions. Missing, ambiguous, oversized,
+or unavailable results remain blocked for manual reconciliation; task completion
+alone does not acknowledge a candidate. Copilot does not need a shell `GH_TOKEN`
+to report its result. Repeated reconciliation does not post another result or
+restart the acknowledged candidate.
 Restore a missing/closed tracker rather than creating a replacement. For uncertain
 or stalled tasks, inspect the recorded task and reconcile manually; do not delete
 reservations to force retries. Unset the activation variable to stop new writes;

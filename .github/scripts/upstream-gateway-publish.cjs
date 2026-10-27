@@ -2,6 +2,7 @@
 
 const { verifyInvestigation, hash } = require("./upstream-gateway-protocol.cjs");
 const { readWelcomeContent } = require("./welcome-content.cjs");
+const { readTaskResult } = require("./copilot-task-result.cjs");
 
 const LABEL = "upstream-gateway-protocol";
 const MARKER = "<!-- upstream-gateway-protocol:v1:";
@@ -28,7 +29,7 @@ const INSTRUCTIONS =
 "Do not create any PR for supported, intentionally unsupported or existing-work dispositions; record evidence on the tracker instead. Never create an empty or snapshot-only PR. " +
 "For confirmed gaps, implement production and mock-Gateway behavior where needed, with real-client behavioral tests and default read-only fixture isolation. Questions use dedicated question events/RPCs, not agent stream=approval; check scopes, IDs, choices, multiselect, expiry, cancellation, submission and recovery. " +
 "Keep any PR draft; never merge, enable auto-merge, activate live workflows, pin runtime dependencies or alter this monitor/credentials to silence findings. Preserve the PR template, required proof, and explicit blockers. " +
-"Run required repository validation. If blocked, report a concrete blocker. Never close the permanent tracker or edit its bot-owned state. Finish with one tracker comment containing the exact disposition marker supplied in the task prompt and supporting evidence or a linked PR.";
+"Run required repository validation. If blocked, report a concrete blocker. Never close the permanent tracker or edit its bot-owned state. Finish with a final answer containing exactly one disposition marker supplied in the task prompt and supporting evidence or a linked PR. The monitor publishes that final answer to the tracker; do not rely on gh authentication or post a separate tracker comment.";
 
 function fail(message) { throw new Error(message); }
 
@@ -310,7 +311,29 @@ async function handoff({ github, copilot, context, report, core, issueNumber, no
     if (ACTIVE_TASK_STATES.includes(task.state) && now - Date.parse(task.created_at) > 86400000) candidate.task.attention = "stalled";
     if (["failed", "timed_out", "cancelled"].includes(task.state)) candidate.task.attention = "failed";
     if (task.state === "completed") {
-      candidate.task.disposition = await disposition(github, context, candidate);
+      candidate.task.disposition = await disposition(github, context, candidate) ?? candidate.task.disposition;
+      if (!candidate.task.disposition) {
+        const result = await readTaskResult(copilot, task, candidate.candidateHash);
+        if (result) {
+          const body = `<!-- upstream-gateway-result:v1:${task.id}:${result.sessionId} -->\n`
+            + "## Copilot investigation result\n\n"
+            + `[Completed task](https://github.com/${context.repo.owner}/${context.repo.repo}/tasks/${task.id}). `
+            + "Final answer retrieved by the monitor, not independently verified runtime proof.\n\n"
+            + result.text;
+          const comments = await boundedList(github, "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+            { ...context.repo, issue_number: TRACKER_NUMBER });
+          // A lost comment response can be recovered without posting twice. Public
+          // lookalike comments cannot acknowledge a task or suppress publication.
+          const exists = comments.some((comment) => comment.body === body
+            && (comment.user?.id === GITHUB_ACTIONS_BOT_ID
+              || ["OWNER", "MEMBER", "COLLABORATOR"].includes(comment.author_association)));
+          await save();
+          if (!exists) await github.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+            ...context.repo, issue_number: TRACKER_NUMBER, body,
+          });
+          candidate.task.disposition = result.disposition;
+        }
+      }
       if (!candidate.task.disposition) candidate.task.attention = "needs-disposition";
     }
     await save();

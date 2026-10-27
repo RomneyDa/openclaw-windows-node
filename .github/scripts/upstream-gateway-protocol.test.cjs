@@ -512,8 +512,13 @@ function boundary(t, value = report()) {
     tracker: { number: 1829, title: "Gateway capability tracking", state: "open", labels: [], assignees: [],
       body: "<!-- upstream-gateway-tracker:v1 -->\n<!-- upstream-gateway-owned:begin -->\nNot activated.\n<!-- upstream-gateway-owned:end -->" },
   };
-  t.mock.method(global, "fetch", async (url) => {
+  t.mock.method(global, "fetch", async (url, options) => {
     const key = String(url);
+    if (key.startsWith("https://api.individual.githubcopilot.com/agents/sessions/")) {
+      assert.equal(options.headers.Authorization, "Bearer personal-test-token");
+      assert.equal(options.headers["Copilot-Integration-Id"], "copilot-4-cli");
+      return new Response(state.resultLogs);
+    }
     if (key.endsWith(".tgz")) return new Response(artifact.compressed);
     assert.ok(key.startsWith("https://registry.npmjs.org/%40openclaw%2Fgateway-protocol/"));
     const version = key.split("/").at(-1);
@@ -573,8 +578,8 @@ function boundary(t, value = report()) {
     assert.ok(!route.includes("/agents/"), "workflow-token client must never call Agent Tasks API");
     return transport(route, args);
   } };
-  const copilot = { request(route, args) {
-    assert.ok(route.includes("/agents/"), "personal-token client must never read/write repository issues");
+  const copilot = { async auth() { return { type: "token", token: "personal-test-token" }; }, request(route, args) {
+    assert.ok(route.includes("/agents/") || route === "POST /graphql", "personal-token client must never read/write repository issues");
     return transport(route, args);
   } };
   return { state, github, copilot,
@@ -734,6 +739,100 @@ test("completed task needs a trusted fingerprint-bound disposition and never res
   assert.equal(h.state.tasks.length, 1);
   assert.deepEqual(trackerState(h).acknowledged, [report().capabilities.families[0].candidateHash]);
   assert.equal(h.state.tracker.state, "open");
+});
+
+test("source collection and report validation accept growth beyond ten thousand watched files", () => {
+  const value = report();
+  const tree = paths.map((path) => ({ path, sha, type: "blob" }));
+  for (let i = 0; i < 10000; i++) tree.push({ path: `src/gateway/growth-${i}.ts`, sha, type: "blob" });
+  value.main.files = monitor.sourceInventory({ truncated: false, tree });
+  assert.equal(Object.keys(value.main.files).length, 10005);
+  value.capabilities = monitor.assessLocal(value, local);
+  value.fingerprint = monitor.fingerprint(value);
+  monitor.validateReport(value);
+  assert.throws(() => monitor.sourceInventory({ truncated: true, tree }), /Incomplete upstream tree/);
+  for (let i = 10000; i < 50000; i++) tree.push({ path: `src/gateway/growth-${i}.ts`, sha, type: "blob" });
+  assert.throws(() => monitor.sourceInventory({ truncated: false, tree }), /exceeds 50000 files/);
+});
+
+test("completed task result is recovered with personal auth, published once, and acknowledged without another task", async (t) => {
+  const h = boundary(t);
+  await h.publish(); await h.handoff();
+  const task = h.state.tasks[0];
+  task.state = "completed";
+  task.repository = { id: 1144728715 };
+  task.session_count = 1;
+  task.sessions = [{ id: "00e29dc1-0a8e-4559-97d4-681b4c112703", task_id: task.id,
+    repository: task.repository, state: "completed" }];
+  const final = "Existing PR #1757 owns this implementation. Scope and real Gateway validation remain outstanding.\n"
+    + dispositionComment(h, "existing-work").body;
+  h.state.resultLogs = 'data: ' + JSON.stringify({ id: "turn-31", object: "chat.completion.chunk",
+    choices: [{ index: 0, delta: { role: "assistant", content: final }, finish_reason: "stop" }] }) + '\n';
+  let loseCommentResponse = true;
+  h.state.override = (route, args) => {
+    if (route === "POST /graphql") return { data: { data: { viewer: { copilotEndpoints: { api: "https://api.individual.githubcopilot.com" } } } } };
+    if (route === "POST /repos/{owner}/{repo}/issues/{issue_number}/comments") {
+      const comment = { id: 99, body: args.body, user: { id: 41898282 }, author_association: "CONTRIBUTOR" };
+      h.state.comments.push(comment);
+      if (loseCommentResponse) { loseCommentResponse = false; throw new Error("comment response lost"); }
+      return { data: comment, status: 201 };
+    }
+  };
+  await assert.rejects(h.handoff(), /comment response lost/);
+  assert.equal(trackerState(h).current.task.disposition, undefined);
+  assert.equal((await h.handoff()).state, "completed");
+  await h.publish(); await h.handoff(); await h.publish();
+  assert.equal(h.state.tasks.length, 1);
+  assert.equal(h.state.comments.length, 1);
+  assert.match(h.state.comments[0].body, /Existing PR #1757/);
+  assert.equal(trackerState(h).current.task.disposition, "existing-work");
+  assert.deepEqual(trackerState(h).acknowledged, [report().capabilities.families[0].candidateHash]);
+});
+
+test("result recovery accepts only the bound session's final assistant disposition", async (t) => {
+  const { readTaskResult } = require("./copilot-task-result.cjs");
+  const candidateHash = "a".repeat(64);
+  const marker = `<!-- upstream-gateway-disposition:v1:${candidateHash}:existing-work -->`;
+  const evidence = "Existing PR #1757 owns the implementation. Requested scope and real Gateway validation remain outstanding.\n";
+  const final = evidence + marker;
+  const session = { id: "00e29dc1-0a8e-4559-97d4-681b4c112703", task_id: "task-1", state: "completed", repository: { id: 123 } };
+  const task = { id: "task-1", state: "completed", session_count: 1, repository: { id: 123 }, sessions: [session] };
+  const event = (delta, finish_reason = "stop", id = "turn-31") => "data: " + JSON.stringify({ id,
+    object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] }) + "\n";
+  const answer = (content) => event({ role: "assistant", content });
+  let currentLog;
+  t.mock.method(global, "fetch", async (url, options) => {
+    assert.equal(url, `https://api.individual.githubcopilot.com/agents/sessions/${session.id}/logs`);
+    assert.equal(options.headers.Authorization, "Bearer result-test-token");
+    assert.equal(options.redirect, "error");
+    return new Response(currentLog);
+  });
+  const run = async (log, value = task, endpoint = "https://api.individual.githubcopilot.com") => {
+    currentLog = log;
+    const copilot = { async auth() { return { type: "token", token: "result-test-token" }; }, async request(route) {
+      assert.equal(route, "POST /graphql");
+      return { data: { data: { viewer: { copilotEndpoints: { api: endpoint } } } } };
+    } };
+    return readTaskResult(copilot, value, candidateHash);
+  };
+  const split = event({ role: "assistant", content: evidence }, null) + event({ content: marker });
+  assert.equal((await run(split)).disposition, "existing-work");
+  for (const log of [
+    answer(final.replace(candidateHash, "b".repeat(64))),
+    answer(final + "\n" + marker),
+    answer(marker),
+    event({ role: "tool", content: final }),
+    event({ role: "assistant", content: final, tool_calls: [{ id: "tool" }] }),
+    event({ role: "assistant", content: final }, null),
+    answer(final) + answer("I cannot establish a disposition."),
+    event({ role: "assistant", reasoning_text: final }),
+  ]) assert.equal(await run(log), null);
+  await assert.rejects(run(answer(final), { ...task, sessions: [{ ...session, task_id: "other-task" }] }), /identity mismatch/);
+  await assert.rejects(run(answer(final), { ...task, sessions: [{ ...session, repository: { id: 456 } }] }), /identity mismatch/);
+  await assert.rejects(run(answer(final), { ...task, session_count: 2 }), /one completed session/);
+  await assert.rejects(run(answer(final), task, "https://api.individual.githubcopilot.com.evil.example"), /Unapproved/);
+  await assert.rejects(run("unexpected format"), /Unexpected.*format/);
+  await assert.rejects(run(answer("x".repeat(16001))), /final answer exceeds/);
 });
 
 test("new evidence can replace a completed acknowledged candidate, preserving its fingerprint", async (t) => {
