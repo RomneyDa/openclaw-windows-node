@@ -13,6 +13,8 @@ namespace OpenClaw.Shared.Tests;
 public class OpenClawGatewayClientTests
 {
     private static readonly TimeSpan CloseHandshakeTimeout = TimeSpan.FromSeconds(3);
+    // Session-event regressions run with the default refresh window (no environment override).
+    private static readonly TimeSpan SessionRefreshQuietInterval = TimeSpan.FromMilliseconds(600);
 
     // Test helper to access private methods through reflection
     private class GatewayClientTestHelper
@@ -632,7 +634,8 @@ public class OpenClawGatewayClientTests
         Assert.True(automaticFrame.RootElement.GetProperty("params").GetProperty("includeDerivedTitles").GetBoolean());
         Assert.False(automaticFrame.RootElement.GetProperty("params").TryGetProperty("agentId", out _));
 
-        // A wire ordering barrier detects a duplicate request from the same burst.
+        // Allow a wrongly retained trailing timer to expire before the wire ordering barrier.
+        await Task.Delay(SessionRefreshQuietInterval);
         await client.RequestSessionsAsync("barrier");
         using var barrier = JsonDocument.Parse(await server.ReceiveTextAsync().WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal("barrier", barrier.RootElement.GetProperty("params").GetProperty("agentId").GetString());
@@ -659,7 +662,7 @@ public class OpenClawGatewayClientTests
 
         // Exercise expiration, not transport rejection: the socket remains ready throughout.
         // This exceeds the default 250 ms batching window and admits no new event until it expires.
-        await Task.Delay(TimeSpan.FromMilliseconds(600));
+        await Task.Delay(SessionRefreshQuietInterval);
         await client.RequestSessionsAsync("after-disconnect");
         using var explicitFrame = JsonDocument.Parse(await server.ReceiveTextAsync().WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal("after-disconnect", explicitFrame.RootElement.GetProperty("params").GetProperty("agentId").GetString());
@@ -708,13 +711,15 @@ public class OpenClawGatewayClientTests
             helper.ProcessRawMessage("""{"type":"event","event":"session","payload":{}}""");
 
         // Hold the send past a batching window. Further events may not enqueue more sends.
-        await Task.Delay(TimeSpan.FromMilliseconds(600));
+        await Task.Delay(SessionRefreshQuietInterval);
         Assert.Equal(1, Volatile.Read(ref client.AutomaticSends));
         client.ReleaseFirstSend.TrySetResult();
         using var trailing = JsonDocument.Parse(await server.ReceiveTextAsync().WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal("sessions.list", trailing.RootElement.GetProperty("method").GetString());
         Assert.Equal(2, Volatile.Read(ref client.AutomaticSends));
         Assert.Contains(logger.Logs, message => message.Contains("Session event refresh failed: IOException"));
+        await Task.Delay(SessionRefreshQuietInterval);
+        Assert.Equal(2, Volatile.Read(ref client.AutomaticSends));
         await client.RequestSessionsAsync("barrier");
         using var barrier = JsonDocument.Parse(await server.ReceiveTextAsync().WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal("barrier", barrier.RootElement.GetProperty("params").GetProperty("agentId").GetString());
