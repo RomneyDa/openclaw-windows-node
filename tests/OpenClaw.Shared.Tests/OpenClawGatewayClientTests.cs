@@ -13,7 +13,7 @@ namespace OpenClaw.Shared.Tests;
 public class OpenClawGatewayClientTests
 {
     private static readonly TimeSpan CloseHandshakeTimeout = TimeSpan.FromSeconds(3);
-    // Session-event regressions run with the default refresh window (no environment override).
+    // Session-event regressions explicitly unset the refresh-window override.
     private static readonly TimeSpan SessionRefreshQuietInterval = TimeSpan.FromMilliseconds(600);
 
     // Test helper to access private methods through reflection
@@ -612,6 +612,7 @@ public class OpenClawGatewayClientTests
     [Fact]
     public async Task SessionEventBurst_CoalescesBothEventKinds_WithoutDelayingExplicitRefresh()
     {
+        using var refreshWindow = new EnvironmentScope("OPENCLAW_SESSION_REFRESH_WINDOW_MS", null);
         using var server = new LoopbackWebSocketServer();
         using var identity = new TempDirectory("session-refresh-");
         await server.StartAsync();
@@ -648,6 +649,7 @@ public class OpenClawGatewayClientTests
     [Fact]
     public async Task SessionEventRefresh_DisconnectCancelsOldWindow_AndNewEventsStillRefresh()
     {
+        using var refreshWindow = new EnvironmentScope("OPENCLAW_SESSION_REFRESH_WINDOW_MS", null);
         using var server = new LoopbackWebSocketServer();
         using var identity = new TempDirectory("session-refresh-");
         await server.StartAsync();
@@ -697,6 +699,7 @@ public class OpenClawGatewayClientTests
     [Fact]
     public async Task SessionEventRefresh_SlowFailedSend_ObservesFailureAndKeepsOneTrailingRefresh()
     {
+        using var refreshWindow = new EnvironmentScope("OPENCLAW_SESSION_REFRESH_WINDOW_MS", null);
         using var server = new LoopbackWebSocketServer();
         using var identity = new TempDirectory("session-refresh-");
         await server.StartAsync();
