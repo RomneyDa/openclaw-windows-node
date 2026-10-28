@@ -356,7 +356,7 @@ function validateReport(report) {
   check(report.evidenceHash === hash({ baseline: report.baseline, changes: report.changes }), "Report evidence mismatch");
   for (const track of ["main"]) {
     const changes = report.changes?.[track];
-    check(Array.isArray(changes) && changes.length <= 20000, "Invalid source deltas");
+    check(Array.isArray(changes) && changes.length <= 2 * MAX_SOURCE_FILES, "Invalid source deltas");
     for (const change of changes) {
       check(watchGroup(change.path) === change.group && GROUPS.includes(change.group)
         && ["baseline-review", "added", "removed", "changed"].includes(change.kind)

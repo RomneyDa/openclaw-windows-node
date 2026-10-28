@@ -279,6 +279,22 @@ or stalled tasks, inspect the recorded task and reconcile manually; do not delet
 reservations to force retries. Unset the activation variable to stop new writes;
 `report_only: true` suppresses writes even while enabled.
 
+For a bounded recovery check after the repair is deployed, dispatch the same
+workflow from the default branch with `report_only: false`,
+`recovery_only: true`, and `recovery_task_id` set to the exact task ID currently
+recorded on the tracker. The activation variable and existing Copilot secret
+must already be configured. This is a live write, not a read-only check.
+Recovery refuses a missing, different, or unfinished task and never reserves
+or creates an investigation or selects the next candidate. It can publish the
+recorded task's validated final answer and update only the tracker's owned
+state, including its disposition, acknowledgment and cleared health warning.
+Welcome-copy notifications and normal publication/failure jobs do not run.
+Repeat with the same task ID to check that no additional result comment or
+task appears. Inspect the Actions summary and tracker after each run; a failed
+recovery does not automatically retry or grant authority to replace the task.
+Default-branch guards still apply, so a feature-branch dispatch cannot prove
+deployed publication. Leave `recovery_only` false for ordinary monitoring.
+
 ### Welcome copy notifications
 
 The same nightly workflow also compares welcome text for English, French, Dutch,

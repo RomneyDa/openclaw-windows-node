@@ -51,6 +51,7 @@ async function readTaskResult(copilot, task, candidateHash) {
     catch { throw new Error("Malformed Copilot session log event"); }
     if (entry.object !== "chat.completion.chunk") continue;
     if (typeof entry.id !== "string" || !entry.id) throw new Error("Missing Copilot result message identity");
+    if (Array.isArray(entry.choices) && entry.choices.length === 0) continue;
     final = null;
     for (const choice of entry.choices ?? []) {
       const delta = choice.delta ?? {};

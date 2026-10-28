@@ -234,6 +234,8 @@ async function disposition(github, context, candidate) {
     .map((comment) => comment.body?.match(pattern)?.[1]).filter(Boolean).at(-1);
 }
 async function publish({ github, context, report, core, createWork = true }) {
+  if ([true, "true"].includes(context.payload.inputs?.recovery_only))
+    fail("Recovery cannot select candidates; use the pinned recovery handoff");
   const assessment = await verifyInvestigation({ github, report });
   const work = await workState(github, context);
   const tracker = await getTracker(github, context.repo), state = readState(tracker);
@@ -281,21 +283,33 @@ async function taskList(github, repo, headers) {
   }
   fail("Agent task history exceeds 2000 records; reconcile manually");
 }
-async function handoff({ github, copilot, context, report, core, issueNumber, now = Date.now() }) {
+async function handoff({ github, copilot, context, report, core, issueNumber, now = Date.now(),
+  recoveryOnly = false, expectedTaskId = null }) {
   if (context.repo.owner !== "openclaw" || context.repo.repo !== "openclaw-windows-node"
     || !["schedule", "workflow_dispatch", "repository_dispatch"].includes(context.eventName)
     || context.ref !== "refs/heads/" + context.payload.repository.default_branch
     || (context.eventName === "repository_dispatch" && context.payload.action !== "gateway-protocol-published")
     || [true, "true"].includes(context.payload.inputs?.report_only)) fail("Dispatch context does not authorize investigation tasks");
+  if (typeof recoveryOnly !== "boolean") fail("Invalid recovery-only mode");
+  const recoveryRequested = [true, "true"].includes(context.payload.inputs?.recovery_only);
+  if (recoveryOnly !== recoveryRequested
+    || (recoveryOnly && (context.eventName !== "workflow_dispatch"
+      || ![false, "false"].includes(context.payload.inputs?.report_only)
+      || !/^[a-zA-Z0-9_-]{1,200}$/.test(expectedTaskId ?? "")
+      || expectedTaskId !== context.payload.inputs?.recovery_task_id))
+    || (!recoveryOnly && expectedTaskId !== null)) fail("Recovery requires an explicit manual dispatch and pinned task ID");
   const assessment = await verifyInvestigation({ github, report });
   if (issueNumber !== TRACKER_NUMBER) fail("Investigation must use tracker #1829");
   let tracker = await getTracker(github, context.repo);
   const state = readState(tracker), candidate = state.current;
   if (!candidate) fail("Tracker has no candidate");
+  if (recoveryOnly && candidate.task.taskId !== expectedTaskId)
+    fail("Recovery task does not match the recorded task; no new task started");
   if (tracker.assignees?.length && !candidate.task.taskId) return { state: "assigned" };
   const headers = { accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10" };
   const save = async () => { tracker = await saveState(github, context, tracker, state); };
   if (!copilot) {
+    if (recoveryOnly) fail("COPILOT_GITHUB_TOKEN unavailable; recovery made no changes");
     candidate.task.attention = "missing-token";
     await save();
     fail("COPILOT_GITHUB_TOKEN unavailable; no new agent task started.");
@@ -306,6 +320,7 @@ async function handoff({ github, copilot, context, report, core, issueNumber, no
     });
     const task = validateTask(data);
     if (task.id !== candidate.task.taskId) fail("Agent task identity mismatch");
+    if (recoveryOnly && task.state !== "completed") fail("Recovery requires a completed recorded task");
     candidate.task.state = task.state;
     delete candidate.task.attention;
     if (ACTIVE_TASK_STATES.includes(task.state) && now - Date.parse(task.created_at) > 86400000) candidate.task.attention = "stalled";
@@ -335,11 +350,16 @@ async function handoff({ github, copilot, context, report, core, issueNumber, no
         }
       }
       if (!candidate.task.disposition) candidate.task.attention = "needs-disposition";
+      if (recoveryOnly && candidate.task.disposition) {
+        if (!state.acknowledged.includes(candidate.candidateHash)) state.acknowledged.push(candidate.candidateHash);
+        state.health = null;
+      }
     }
     await save();
     if (candidate.task.attention) fail("Agent task " + candidate.task.attention + "; reconcile on #1829, no automatic retry.");
     return { state: task.state, taskId: task.id };
   }
+  if (recoveryOnly) fail("Recovery cannot create or reserve an investigation task");
   if (candidate.task.reservation) fail("Task creation is reserved or uncertain; no automatic replay.");
   const current = assessment.families.find((family) => family.candidateHash === candidate.candidateHash && family.id === candidate.id);
   if (!current || current.status !== "pending") fail("Candidate contract changed or no longer pending; reconcile tracker before starting stale work");
